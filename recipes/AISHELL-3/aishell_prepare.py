@@ -23,7 +23,7 @@ def prepare_aishell(data_folder, save_folder, skip_prep=False):
         return
 
     # If the data folders do not exist, we need to extract the data
-    if not os.path.isdir(os.path.join(data_folder, "data_aishell3/wav")):
+    if not os.path.isdir(os.path.join(data_folder, "train/wav")) or not os.path.isdir(os.path.join(data_folder, "test/wav")):
         # Check for zip file and download if it doesn't exist
         zip_location = os.path.join(data_folder, "data_aishell3.tgz")
         if not os.path.exists(zip_location):
@@ -31,31 +31,34 @@ def prepare_aishell(data_folder, save_folder, skip_prep=False):
             download_file(url, zip_location, unpack=True)
         logger.info("Extracting data_aishell.tgz...")
         shutil.unpack_archive(zip_location, data_folder)
-        wav_dir = os.path.join(data_folder, "data_aishell3/wav")
-        tgz_list = glob.glob(wav_dir + "/*.tar.gz")
-        for tgz in tgz_list:
-            shutil.unpack_archive(tgz, wav_dir)
-            os.remove(tgz)
-
-    # Create filename-to-transcript dictionary
-    filename2transcript = {}
-    with open(
-        os.path.join(
-            data_folder, "data_aishell3/transcript/aishell_transcript_v0.8.txt"
-        ),
-        "r",
-    ) as f:
-        lines = f.readlines()
-        for line in lines:
-            key = line.split()[0]
-            value = " ".join(line.split()[1:])
-            filename2transcript[key] = value
+        # wav_dir = os.path.join(data_folder, "data_aishell3/wav")
+        # tgz_list = glob.glob(wav_dir + "/*.tar.gz")
+        # for tgz in tgz_list:
+        #     shutil.unpack_archive(tgz, wav_dir)
+        #     os.remove(tgz)
 
     splits = [
         "train",
-        "dev",
         "test",
     ]
+
+    # Create filename-to-transcript and file-to-pinyin dictionary
+    filename2transcript = {}
+    filename2pinyin = {}
+
+    for split in splits:
+        with open(
+            os.path.join(
+                data_folder, split, "content.txt"
+            ),
+            "r",
+        ) as f:
+            lines = f.readlines()
+            for line in lines:
+                key = line.split()[0].split(".")[0]
+                value = " ".join(line.split()[1::2])
+                filename2transcript[key] = value
+
     ID_start = 0  # needed to have a unique ID for each audio
     for split in splits:
         new_filename = os.path.join(save_folder, split) + ".csv"
@@ -67,17 +70,16 @@ def prepare_aishell(data_folder, save_folder, skip_prep=False):
         entry = []
 
         all_wavs = glob.glob(
-            os.path.join(data_folder, "data_aishell/wav")
-            + "/"
-            + split
-            + "/*/*.wav"
+            os.path.join(data_folder, split)
+            + "/wav/*/*.wav"
         )
         for i in range(len(all_wavs)):
             filename = all_wavs[i].split("/")[-1].split(".wav")[0]
             if filename not in filename2transcript:
                 continue
             signal = read_audio(all_wavs[i])
-            duration = signal.shape[0] / 16000
+            # duration = signal.shape[0] / 16000
+            duration = signal.shape[0] / 44100
             transcript_ = filename2transcript[filename]
             csv_line = [
                 ID_start + i,
