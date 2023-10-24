@@ -102,3 +102,38 @@ def prepare_aishell(data_folder, save_folder, skip_prep=False):
         logger.info(msg)
 
         ID_start += len(all_wavs)
+
+    # Create csv file for validation set from training set
+    new_filename = os.path.join(save_folder, "valid.csv")
+    if os.path.exists(new_filename):
+        return
+    logger.info("Preparing %s..." % new_filename)
+    # Read the training csv file and split it into train and valid
+    train_csv = os.path.join(save_folder, "train.csv")
+    with open(train_csv, "r") as f:
+        reader = csv.reader(f)
+        lines = list(reader)
+    # Split the training data into train and valid
+    train_lines = lines[: int(0.7 * len(lines))]
+    valid_lines = lines[int(0.7 * len(lines)) :]
+    # Add the header to the valid csv file
+    csv_header = [["ID", "duration", "wav", "transcript"]]
+    valid_lines = csv_header + valid_lines
+    # Write the valid csv file
+    with open(new_filename, mode="w") as csv_f:
+        csv_writer = csv.writer(
+            csv_f, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL
+        )
+        for line in valid_lines:
+            csv_writer.writerow(line)
+    msg = "\t%s successfully created!" % (new_filename)
+    logger.info(msg)
+    # Write the train csv file
+    with open(train_csv, mode="w") as csv_f:
+        csv_writer = csv.writer(
+            csv_f, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL
+        )
+        for line in train_lines:
+            csv_writer.writerow(line)
+    msg = "\t%s successfully splitted !" % (train_csv)
+    logger.info(msg)

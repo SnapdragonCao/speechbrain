@@ -21,25 +21,25 @@ data_folder: !ref /data2/xiaolong/AISHELL-3 # e,g./path/to/aishell
 skip_prep: False
 ckpt_interval_minutes: 15 # save checkpoint every N min
 train_data: !ref <output_folder>/train.csv
-valid_data: !ref <output_folder>/dev.csv
+valid_data: !ref <output_folder>/valid.csv
 test_data: !ref <output_folder>/test.csv
 
 wav2vec2_hub: TencentGameMate/chinese-wav2vec2-large
 wav2vec2_folder: !ref <save_folder>/wav2vec2_checkpoint
 
 # Training parameters
-number_of_epochs: 80
+number_of_epochs: 10
 lr: 1.0
 lr_wav2vec: 0.0001
-sorting: ascending
+sorting: descending
 auto_mix_prec: False
-sample_rate: 16000
+sample_rate: 44100
 
 # With data_parallel batch_size is split into N jobs
 # With DDP batch_size is multiplied by N jobs
 # Must be 8 per GPU to fit 32GB of VRAM
-batch_size: 10
-test_batch_size: 4
+batch_size: 2
+test_batch_size: 1
 
 dynamic_batching: False
 dynamic_batch_sampler:
