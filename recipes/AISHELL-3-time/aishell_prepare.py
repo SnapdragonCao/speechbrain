@@ -4,7 +4,8 @@ import logging
 from speechbrain.dataio.dataio import read_audio
 from speechbrain.utils.data_utils import download_file
 import glob
-import csv
+import json
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ def prepare_aishell(data_folder, save_folder, skip_prep=False):
         return
 
     # If the data folders do not exist, we need to extract the data
-    if not os.path.isdir(os.path.join(data_folder, "train/wav")) or not os.path.isdir(os.path.join(data_folder, "test/wav")):
+    if not os.path.isdir(os.path.join(data_folder, "wavs")):
         # Check for zip file and download if it doesn't exist
         zip_location = os.path.join(data_folder, "data_aishell3.tgz")
         if not os.path.exists(zip_location):
@@ -37,16 +38,11 @@ def prepare_aishell(data_folder, save_folder, skip_prep=False):
         #     shutil.unpack_archive(tgz, wav_dir)
         #     os.remove(tgz)
 
-    splits = [
-        "train",
-        "test",
-    ]
+    # Create filename maps for creating json label file.
+    valid_wavs = {}
 
-    # Create filename-to-transcript and file-to-pinyin dictionary
-    filename2transcript = {}
-    filename2pinyin = {}
-
-    for split in splits:
+    # Store transcripts from the two content.txt
+    for split in ["train", "test"]:
         with open(
             os.path.join(
                 data_folder, split, "content.txt"
@@ -56,84 +52,105 @@ def prepare_aishell(data_folder, save_folder, skip_prep=False):
             lines = f.readlines()
             for line in lines:
                 key = line.split()[0].split(".")[0]
-                value = " ".join(line.split()[1::2])
-                filename2transcript[key] = value
+                characters = line.split()[1::2]
+                if has_erhua(characters):
+                    continue
+                value = " ".join(characters)
+                valid_wavs[key] = value
 
-    ID_start = 0  # needed to have a unique ID for each audio
-    for split in splits:
-        new_filename = os.path.join(save_folder, split) + ".csv"
-        if os.path.exists(new_filename):
-            continue
-        logger.info("Preparing %s..." % new_filename)
 
-        csv_output = [["ID", "duration", "wav", "transcript"]]
-        entry = []
+    # Split the dataset into train, valid, and test
+    logger.info("Splitting the dataset...")
+    all_wavs = glob.glob(
+        os.path.join(data_folder)
+        + "/wavs/*/*.wav"
+    )
+    data_split = split_sets(all_wavs, [80, 10, 10])
 
-        all_wavs = glob.glob(
-            os.path.join(data_folder, split)
-            + "/wav/*/*.wav"
-        )
-        for i in range(len(all_wavs)):
-            filename = all_wavs[i].split("/")[-1].split(".wav")[0]
-            if filename not in filename2transcript:
-                continue
-            signal = read_audio(all_wavs[i])
-            # duration = signal.shape[0] / 16000
-            duration = signal.shape[0] / 44100
-            transcript_ = filename2transcript[filename]
-            csv_line = [
-                ID_start + i,
-                str(duration),
-                all_wavs[i],
-                transcript_,
-            ]
-            entry.append(csv_line)
+    # Read other labels from corresponding json files
+    for split in data_split.keys():
+        new_filename = os.path.join(save_folder, split + ".json")
+        if not os.path.exists(new_filename):
+            logger.info("Preparing %s..." % new_filename)
+            entry = []
 
-        csv_output = csv_output + entry
+            current_wavs = data_split[split]
+            for i in range(len(current_wavs)):
+                filename = current_wavs[i].split("/")[-1].split(".wav")[0]
+                if filename not in valid_wavs:
+                    continue
+                signal = read_audio(current_wavs[i])
+                duration = signal.shape[0] / 16000
+                # duration = signal.shape[0] / 44100
+                transcript = valid_wavs[filename]
 
-        with open(new_filename, mode="w") as csv_f:
-            csv_writer = csv.writer(
-                csv_f, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL
-            )
-            for line in csv_output:
-                csv_writer.writerow(line)
+                # Read character-level onset/offset from corresponding json files
+                json_file = os.path.join(
+                    data_folder, "wavs", filename + ".json"
+                )
+                with open(json_file, "r") as f:
+                    json_data = json.load(f)
+                # Get the onset and offset of each character
+                onsets = list(map(lambda x: x["start_time"], json_data))
+                offsets = list(map(lambda x: x["end_time"], json_data))
+                # Add into the entry
+                entry.append(
+                    {
+                        "id": filename,
+                        "path": current_wavs[i],
+                        "duration": duration,
+                        "transcript": transcript,
+                        "onsets": onsets,
+                        "offsets": offsets,
+                    }
+                )
+
+        # Write the json file
+        with open(new_filename, "w", encoding="utf8") as f:
+            json.dump(entry, f, indent=4, ensure_ascii=False)
 
         msg = "\t%s successfully created!" % (new_filename)
         logger.info(msg)
 
-        ID_start += len(all_wavs)
 
-    # Create csv file for validation set from training set
-    new_filename = os.path.join(save_folder, "valid.csv")
-    if os.path.exists(new_filename):
-        return
-    logger.info("Preparing %s..." % new_filename)
-    # Read the training csv file and split it into train and valid
-    train_csv = os.path.join(save_folder, "train.csv")
-    with open(train_csv, "r") as f:
-        reader = csv.reader(f)
-        lines = list(reader)
-    # Split the training data into train and valid
-    train_lines = lines[: int(0.7 * len(lines))]
-    valid_lines = lines[int(0.7 * len(lines)) :]
-    # Add the header to the valid csv file
-    csv_header = [["ID", "duration", "wav", "transcript"]]
-    valid_lines = csv_header + valid_lines
-    # Write the valid csv file
-    with open(new_filename, mode="w") as csv_f:
-        csv_writer = csv.writer(
-            csv_f, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL
-        )
-        for line in valid_lines:
-            csv_writer.writerow(line)
-    msg = "\t%s successfully created!" % (new_filename)
-    logger.info(msg)
-    # Write the train csv file
-    with open(train_csv, mode="w") as csv_f:
-        csv_writer = csv.writer(
-            csv_f, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL
-        )
-        for line in train_lines:
-            csv_writer.writerow(line)
-    msg = "\t%s successfully splitted !" % (train_csv)
-    logger.info(msg)
+def has_erhua(characters):
+    """
+    Check if the character tokens contain erhua (two characters together).
+    """
+    for token in characters:
+        if len(token) > 1:
+            return True
+    return False
+
+# Dataset split from libritts_prepare
+def split_sets(wav_list, split_ratio):
+    """Randomly splits the wav list into training, validation, and test lists.
+
+    Arguments
+    ---------
+    wav_list : list
+        list of all the signals in the dataset
+    split_ratio: list
+        List composed of three integers that sets split ratios for train, valid,
+        and test sets, respectively. For instance split_ratio=[80, 10, 10] will
+        assign 80% of the sentences to training, 10% for validation, and 10%
+        for test.
+
+    Returns
+    ------
+    dictionary containing train, valid, and test splits.
+    """
+    # Random shuffles the list
+    random.shuffle(wav_list)
+    total_split = sum(split_ratio)
+    total_wavs = len(wav_list)
+    data_split = {}
+    splits = ["train", "valid"]
+
+    for i, split in enumerate(splits):
+        n_wavs = int(total_wavs * split_ratio[i] / total_split)
+        data_split[split] = wav_list[0:n_wavs]
+        del wav_list[0:n_wavs]
+    data_split["test"] = wav_list
+
+    return data_split
