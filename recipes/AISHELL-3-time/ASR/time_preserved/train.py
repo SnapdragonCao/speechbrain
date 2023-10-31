@@ -203,8 +203,8 @@ def dataio_prepare(hparams):
     It also defines the data processing pipeline through user-defined functions."""
     data_folder = hparams["data_folder"]
 
-    train_data = sb.dataio.dataset.DynamicItemDataset.from_csv(
-        csv_path=hparams["train_data"], replacements={"data_root": data_folder},
+    train_data = sb.dataio.dataset.DynamicItemDataset.from_json(
+        json_path=hparams["train_data"], replacements={"data_root": data_folder},
     )
 
     if hparams["sorting"] == "ascending":
@@ -228,13 +228,13 @@ def dataio_prepare(hparams):
             "sorting must be random, ascending or descending"
         )
 
-    valid_data = sb.dataio.dataset.DynamicItemDataset.from_csv(
-        csv_path=hparams["valid_data"], replacements={"data_root": data_folder},
+    valid_data = sb.dataio.dataset.DynamicItemDataset.from_json(
+        json_path=hparams["valid_data"], replacements={"data_root": data_folder},
     )
     valid_data = valid_data.filtered_sorted(sort_key="duration")
 
-    test_data = sb.dataio.dataset.DynamicItemDataset.from_csv(
-        csv_path=hparams["test_data"], replacements={"data_root": data_folder},
+    test_data = sb.dataio.dataset.DynamicItemDataset.from_json(
+        json_path=hparams["test_data"], replacements={"data_root": data_folder},
     )
     test_data = test_data.filtered_sorted(sort_key="duration")
 
@@ -252,6 +252,7 @@ def dataio_prepare(hparams):
 
     sb.dataio.dataset.add_dynamic_item(datasets, audio_pipeline)
 
+    # TODO: frame-level labels pipeline
     # 3. Define text pipeline:
     @sb.utils.data_pipeline.takes("transcript")
     @sb.utils.data_pipeline.provides("wrd", "tokens_list", "tokens")
@@ -336,7 +337,6 @@ if __name__ == "__main__":
             "skip_prep": hparams["skip_prep"],
         },
     )
-    raise Exception('test')
 
     # here we create the datasets objects as well as tokenization and encoding
     (

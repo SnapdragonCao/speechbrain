@@ -18,7 +18,7 @@ train_log: !ref <output_folder>/train_log.txt
 # Data files
 data_folder: !ref /data2/xiaolong/AISHELL3 # e,g./path/to/aishell
 
-skip_prep: False
+skip_prep: True
 ckpt_interval_minutes: 15 # save checkpoint every N min
 train_data: !ref <output_folder>/train.json
 valid_data: !ref <output_folder>/valid.json
