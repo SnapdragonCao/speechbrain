@@ -6,6 +6,7 @@ from speechbrain.utils.data_utils import download_file
 import glob
 import json
 import random
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -72,10 +73,11 @@ def prepare_aishell(data_folder, save_folder, skip_prep=False):
         new_filename = os.path.join(save_folder, split + ".json")
         if not os.path.exists(new_filename):
             logger.info("Preparing %s..." % new_filename)
-            entry = []
+            entries = []
+            invalid_list = []
 
             current_wavs = data_split[split]
-            for i in range(len(current_wavs)):
+            for i in tqdm(range(len(current_wavs))):
                 filename = current_wavs[i].split("/")[-1].split(".wav")[0]
                 if filename not in valid_wavs:
                     continue
@@ -86,15 +88,19 @@ def prepare_aishell(data_folder, save_folder, skip_prep=False):
 
                 # Read character-level onset/offset from corresponding json files
                 json_file = os.path.join(
-                    data_folder, "wavs", filename + ".json"
+                    data_folder, "wavs", filename[:7], filename + ".json"
                 )
                 with open(json_file, "r") as f:
                     json_data = json.load(f)
+                    # Validate the json file
+                    if json_data is None:
+                        invalid_list.append(json_file + "\n")
+                        continue
                 # Get the onset and offset of each character
                 onsets = list(map(lambda x: x["start_time"], json_data))
                 offsets = list(map(lambda x: x["end_time"], json_data))
                 # Add into the entry
-                entry.append(
+                entries.append(
                     {
                         "id": filename,
                         "path": current_wavs[i],
@@ -107,10 +113,14 @@ def prepare_aishell(data_folder, save_folder, skip_prep=False):
 
         # Write the json file
         with open(new_filename, "w", encoding="utf8") as f:
-            json.dump(entry, f, indent=4, ensure_ascii=False)
+            json.dump(entries, f, indent=4, ensure_ascii=False)
 
         msg = "\t%s successfully created!" % (new_filename)
         logger.info(msg)
+
+        # Write the invalid list
+        with open(os.path.join(save_folder, split + "_invalid.txt"), "w") as f:
+            f.writelines(invalid_list)
 
 
 def has_erhua(characters):
