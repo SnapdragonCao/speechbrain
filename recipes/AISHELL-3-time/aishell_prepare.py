@@ -73,7 +73,7 @@ def prepare_aishell(data_folder, save_folder, skip_prep=False):
         new_filename = os.path.join(save_folder, split + ".json")
         if not os.path.exists(new_filename):
             logger.info("Preparing %s..." % new_filename)
-            entries = []
+            json_dict = {}
             invalid_list = []
 
             current_wavs = data_split[split]
@@ -100,20 +100,18 @@ def prepare_aishell(data_folder, save_folder, skip_prep=False):
                 onsets = list(map(lambda x: x["start_time"], json_data))
                 offsets = list(map(lambda x: x["end_time"], json_data))
                 # Add into the entry
-                entries.append(
-                    {
-                        "id": filename,
+                json_dict[filename] = {
                         "path": current_wavs[i],
                         "duration": duration,
                         "transcript": transcript,
                         "onsets": onsets,
                         "offsets": offsets,
-                    }
-                )
+                }
+                
 
         # Write the json file
         with open(new_filename, "w", encoding="utf8") as f:
-            json.dump(entries, f, indent=4, ensure_ascii=False)
+            json.dump(json_dict, f, indent=4, ensure_ascii=False)
 
         msg = "\t%s successfully created!" % (new_filename)
         logger.info(msg)
