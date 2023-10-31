@@ -29,7 +29,7 @@ class ASR(sb.Brain):
     def compute_forward(self, batch, stage):
         """Forward computations from the waveform batches to the output probabilities."""
         batch = batch.to(self.device)
-        wavs, wav_lens = batch.sig
+        wavs, wav_lens = batch.sig # wav_lens: normalized length of the waveform in the batch, 1.000 for full length
         wavs, wav_lens = wavs.to(self.device), wav_lens.to(self.device)
 
         # Add augmentation if specified
@@ -45,27 +45,67 @@ class ASR(sb.Brain):
         # Forward pass
         feats = self.modules.wav2vec2(wavs, wav_lens)
 
+
         if stage == sb.Stage.TRAIN:
             if hasattr(self.hparams, "SpecAugment"):
                 feats = self.hparams.SpecAugment(feats)
 
         x = self.modules.enc(feats)
+        # print(x.size())
         logits = self.modules.ctc_lin(x)
-        p_ctc = self.hparams.log_softmax(logits)
+        # print(logits.size())
+        # CELoss expects unnormalized logits
+        # p_ctc = self.hparams.log_softmax(logits)
+        # print(p_ctc.size())
 
-        return p_ctc, wav_lens
+        return logits, wav_lens
 
     def compute_objectives(self, predictions, batch, stage):
-        """Computes the CTC loss given predictions and targets."""
-        p_ctc, wav_lens = predictions
+        """Computes the frame-level cross entropy loss given predictions and targets."""
+        logits, wav_lens = predictions
         ids = batch.id
         tokens, tokens_lens = batch.tokens
+        onsets = batch.onsets
+        offsets = batch.offsets
+        durations = batch.durations
+        batch_size = batch.batchsize
+        # wrd = batch.wrd
+        print(logits.size())
 
-        if hasattr(self.modules, "env_corrupt") and stage == sb.Stage.TRAIN:
-            tokens = torch.cat([tokens, tokens], dim=0)
-            tokens_lens = torch.cat([tokens_lens, tokens_lens], dim=0)
+        # Construct frame-level labels
+        
+        full_frames = logits.size(1)
+        labels = torch.zeros(batch_size, full_frames, dtype=torch.long)
+        full_tokens = tokens.size(1)
+        for i in range(batch_size):
+            n_frames = int(full_frames * wav_lens[i])
+            frame_level_labels = torch.zeros(full_frames, dtype=torch.long)
+            frame_length = durations[i] / n_frames
 
-        loss = self.hparams.ctc_cost(p_ctc, tokens, wav_lens, tokens_lens)
+            n_tokens = int(full_tokens * tokens_lens[i]) # number of tokens in the sentence
+            for j in range(n_tokens):
+                if j == 0 or j == n_tokens - 1: # [CLS] and [SEP]
+                    continue
+                if tokens[i][j] == self.hparams.blank_index:
+                    continue
+                else:
+                    start = int(onsets[i][j - 1] / frame_length)
+                    end = int(offsets[i][j - 1] / frame_length)
+                    frame_level_labels[start:end] = tokens[i][j]
+            # Fill the rest of the frames with CELoss ignore index(-100)
+            frame_level_labels[n_frames:] = -100
+            labels[i] = frame_level_labels
+        
+        print(labels.size())
+
+        # No env_corrupt
+        # if hasattr(self.modules, "env_corrupt") and stage == sb.Stage.TRAIN:
+        #     tokens = torch.cat([tokens, tokens], dim=0)
+        #     tokens_lens = torch.cat([tokens_lens, tokens_lens], dim=0)
+
+        # Compute frame-level CE loss
+        loss = self.hparams.ce_loss(logits.transpose(1, 2), labels)
+
 
         if stage != sb.Stage.TRAIN:
             # Decode token terms to words
@@ -252,7 +292,6 @@ def dataio_prepare(hparams):
 
     sb.dataio.dataset.add_dynamic_item(datasets, audio_pipeline)
 
-    # TODO: frame-level labels pipeline
     # 3. Define text pipeline:
     @sb.utils.data_pipeline.takes("transcript")
     @sb.utils.data_pipeline.provides("wrd", "tokens_list", "tokens")
@@ -266,9 +305,28 @@ def dataio_prepare(hparams):
 
     sb.dataio.dataset.add_dynamic_item(datasets, text_pipeline)
 
+    # Define onset/offset pipeline:
+    @sb.utils.data_pipeline.takes("onsets", "offsets")
+    @sb.utils.data_pipeline.provides("onsets", "offsets")
+    def onsets_offsets_pipeline(onsets, offsets):
+        onsets = torch.Tensor(onsets)
+        yield onsets
+        offsets = torch.Tensor(offsets)
+        yield offsets
+    
+    sb.dataio.dataset.add_dynamic_item(datasets, onsets_offsets_pipeline)
+
+    # Use duration to infer frame length
+    @sb.utils.data_pipeline.takes("duration")
+    @sb.utils.data_pipeline.provides("durations")
+    def duration_pipeline(duration):
+        yield duration
+    
+    sb.dataio.dataset.add_dynamic_item(datasets, duration_pipeline)
+
     # 4. Set output:
     sb.dataio.dataset.set_output_keys(
-        datasets, ["id", "sig", "wrd", "tokens"],
+        datasets, ["id", "sig", "wrd", "tokens", "tokens_list", "onsets", "offsets", "durations"],
     )
 
     # 5. If Dynamic Batching is used, we instantiate the needed samplers.
@@ -347,6 +405,9 @@ if __name__ == "__main__":
         train_bsampler,
         valid_bsampler,
     ) = dataio_prepare(hparams)
+    # first_item = next(iter(train_data))
+    # print(first_item)
+    # raise Exception('test')
 
     # Trainer initialization
     asr_brain = ASR(

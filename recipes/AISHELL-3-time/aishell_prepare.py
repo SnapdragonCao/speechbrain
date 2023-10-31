@@ -101,24 +101,23 @@ def prepare_aishell(data_folder, save_folder, skip_prep=False):
                 offsets = list(map(lambda x: x["end_time"], json_data))
                 # Add into the entry
                 json_dict[filename] = {
-                        "path": current_wavs[i],
+                        "wav": current_wavs[i],
                         "duration": duration,
                         "transcript": transcript,
                         "onsets": onsets,
                         "offsets": offsets,
                 }
-                
 
-        # Write the json file
-        with open(new_filename, "w", encoding="utf8") as f:
-            json.dump(json_dict, f, indent=4, ensure_ascii=False)
+            # Write the json file
+            with open(new_filename, "w", encoding="utf8") as f:
+                json.dump(json_dict, f, indent=4, ensure_ascii=False)
 
-        msg = "\t%s successfully created!" % (new_filename)
-        logger.info(msg)
+            msg = "\t%s successfully created!" % (new_filename)
+            logger.info(msg)
 
-        # Write the invalid list
-        with open(os.path.join(save_folder, split + "_invalid.txt"), "w") as f:
-            f.writelines(invalid_list)
+            # Write the invalid list
+            with open(os.path.join(save_folder, split + "_invalid.txt"), "w") as f:
+                f.writelines(invalid_list)
 
 
 def has_erhua(characters):

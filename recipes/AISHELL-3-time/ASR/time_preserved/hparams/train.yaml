@@ -143,6 +143,9 @@ log_softmax: !new:speechbrain.nnet.activations.Softmax
 ctc_cost: !name:speechbrain.nnet.losses.ctc_loss
    blank_index: !ref <blank_index>
 
+# Use CE for the task
+ce_loss: !new:torch.nn.CrossEntropyLoss
+
 modules:
    wav2vec2: !ref <wav2vec2>
    enc: !ref <enc>
