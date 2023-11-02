@@ -69,13 +69,10 @@ class ASR(sb.Brain):
         offsets = batch.offsets
         durations = batch.durations
         batch_size = batch.batchsize
-        # wrd = batch.wrd
-        print(logits.size())
 
-        # Construct frame-level labels
-        
+        # Construct frame-level token labels
         full_frames = logits.size(1)
-        labels = torch.zeros(batch_size, full_frames, dtype=torch.long)
+        token_labels = torch.zeros(batch_size, full_frames, dtype=torch.long)
         full_tokens = tokens.size(1)
         for i in range(batch_size):
             n_frames = int(full_frames * wav_lens[i])
@@ -86,17 +83,18 @@ class ASR(sb.Brain):
             for j in range(n_tokens):
                 if j == 0 or j == n_tokens - 1: # [CLS] and [SEP]
                     continue
-                if tokens[i][j] == self.hparams.blank_index:
-                    continue
+                # Blank tokens are needed
+                # if tokens[i][j] == self.hparams.blank_index:
+                #     continue
                 else:
                     start = int(onsets[i][j - 1] / frame_length)
                     end = int(offsets[i][j - 1] / frame_length)
                     frame_level_labels[start:end] = tokens[i][j]
+
+
             # Fill the rest of the frames with CELoss ignore index(-100)
             frame_level_labels[n_frames:] = -100
-            labels[i] = frame_level_labels
-        
-        print(labels.size())
+            token_labels[i] = frame_level_labels
 
         # No env_corrupt
         # if hasattr(self.modules, "env_corrupt") and stage == sb.Stage.TRAIN:
@@ -104,33 +102,55 @@ class ASR(sb.Brain):
         #     tokens_lens = torch.cat([tokens_lens, tokens_lens], dim=0)
 
         # Compute frame-level CE loss
-        loss = self.hparams.ce_loss(logits.transpose(1, 2), labels)
-
+        token_labels = token_labels.to(self.device)
+        loss = self.hparams.ce_loss(logits.transpose(1, 2), token_labels)
 
         if stage != sb.Stage.TRAIN:
             # Decode token terms to words
-            sequences = sb.decoders.ctc_greedy_decode(
-                p_ctc, wav_lens, blank_id=self.hparams.blank_index
-            )
+            # Choose the token with the highest value for each frame
+            sequences = []
+            for seq, seq_len in zip(logits, wav_lens):
+                seq = seq[:int(full_frames * seq_len)]
+                _, max_index = torch.max(seq, dim=1)
+                sequences.append(max_index.tolist())
             predicted_words_list = []
-            target_words_list = [list(wrd) for wrd in batch.wrd]
 
             for sequence in sequences:
                 # Decode token terms to words
-                predicted_tokens = self.tokenizer.convert_ids_to_tokens(
+                # predicted_tokens = self.tokenizer.convert_ids_to_tokens(
+                #     sequence
+                # )
+                predicted_words = self.tokenizer.convert_ids_to_tokens(
                     sequence
                 )
 
-                predicted_words = []
-                for c in predicted_tokens:
-                    if c == "[CLS]":
-                        continue
-                    elif c == "[SEP]" or c == "[PAD]":
-                        break
-                    else:
-                        predicted_words.append(c)
+                # predicted_words = []
+                # for c in predicted_tokens:
+                #     if c == "[CLS]" or c == "[SEP]":
+                #         continue
+                #     else:
+                #         predicted_words.append(c)
 
                 predicted_words_list.append(predicted_words)
+
+            # Construct frame-level character labels
+            target_words_list = []
+            wrd = batch.wrd
+            
+            for i in range(batch_size):
+                target_words = ["<eps>"] * full_frames
+                n_frames = int(full_frames * wav_lens[i])
+                frame_length = durations[i] / n_frames
+                for j, word in enumerate(wrd[i]):
+                    start = int(onsets[i][j] / frame_length)
+                    end = int(offsets[i][j] / frame_length)
+                    target_words[start:end] = [word] * (end - start)
+                    
+                    if j == 0:
+                        target_words[:start] = ["[PAD]"] * start
+                    if j == len(wrd[i]) - 1:
+                        target_words[end:] = ["[PAD]"] * (full_frames - end)
+                target_words_list.append(target_words)
 
             self.cer_metric.append(
                 ids=ids, predict=predicted_words_list, target=target_words_list,

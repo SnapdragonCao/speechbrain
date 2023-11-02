@@ -99,6 +99,10 @@ def prepare_aishell(data_folder, save_folder, skip_prep=False):
                 # Get the onset and offset of each character
                 onsets = list(map(lambda x: x["start_time"], json_data))
                 offsets = list(map(lambda x: x["end_time"], json_data))
+                # Check if the onset and offset are valid
+                if len(onsets) != len(transcript.split()) or len(offsets) != len(transcript.split()) or len(onsets) != len(offsets):
+                    invalid_list.append(json_file + "\n")
+                    continue
                 # Add into the entry
                 json_dict[filename] = {
                         "wav": current_wavs[i],
