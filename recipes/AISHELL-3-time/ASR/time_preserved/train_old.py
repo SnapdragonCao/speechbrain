@@ -16,12 +16,10 @@ Authors
 
 import sys
 import torch
-from torch.utils.data import DataLoader
 import logging
 import speechbrain as sb
 from speechbrain.utils.distributed import run_on_main
 from hyperpyyaml import load_hyperpyyaml
-from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -66,17 +64,93 @@ class ASR(sb.Brain):
         """Computes the frame-level cross entropy loss given predictions and targets."""
         logits, wav_lens = predictions
         ids = batch.id
+        tokens, tokens_lens = batch.tokens
+        onsets = batch.onsets
+        offsets = batch.offsets
+        durations = batch.durations
+        batch_size = batch.batchsize
 
         # Construct frame-level token labels
-        token_labels = self.get_frame_level_token(predictions, batch)
+        full_frames = logits.size(1)
+        token_labels = torch.zeros(batch_size, full_frames, dtype=torch.long)
+        full_tokens = tokens.size(1)
+        for i in range(batch_size):
+            n_frames = int(full_frames * wav_lens[i])
+            frame_level_labels = torch.zeros(full_frames, dtype=torch.long)
+            frame_length = durations[i] / n_frames
+
+            n_tokens = int(full_tokens * tokens_lens[i]) # number of tokens in the sentence
+            for j in range(n_tokens):
+                if j == 0 or j == n_tokens - 1: # [CLS] and [SEP]
+                    continue
+                # Blank tokens are needed
+                # if tokens[i][j] == self.hparams.blank_index:
+                #     continue
+                else:
+                    start = int(onsets[i][j - 1] / frame_length)
+                    end = int(offsets[i][j - 1] / frame_length)
+                    frame_level_labels[start:end] = tokens[i][j]
+
+
+            # Fill the rest of the frames with CELoss ignore index(-100)
+            # frame_level_labels[n_frames:] = -100
+            token_labels[i] = frame_level_labels
+
+        # No env_corrupt
+        # if hasattr(self.modules, "env_corrupt") and stage == sb.Stage.TRAIN:
+        #     tokens = torch.cat([tokens, tokens], dim=0)
+        #     tokens_lens = torch.cat([tokens_lens, tokens_lens], dim=0)
 
         # Compute frame-level CE loss
         token_labels = token_labels.to(self.device)
         loss = self.hparams.ce_loss(logits.transpose(1, 2), token_labels)
 
         if stage != sb.Stage.TRAIN:
-            predicted_words_list = self.decode(predictions)
-            target_words_list = self.get_frame_level_character(predictions, batch)
+            # Decode token terms to words
+            # Choose the token with the highest value for each frame
+            sequences = []
+            for seq, seq_len in zip(logits, wav_lens):
+                seq = seq[:int(full_frames * seq_len)]
+                _, max_index = torch.max(seq, dim=1)
+                sequences.append(max_index.tolist())
+            predicted_words_list = []
+
+            for sequence in sequences:
+                # Decode token terms to words
+                # predicted_tokens = self.tokenizer.convert_ids_to_tokens(
+                #     sequence
+                # )
+                predicted_words = self.tokenizer.convert_ids_to_tokens(
+                    sequence
+                )
+
+                # predicted_words = []
+                # for c in predicted_tokens:
+                #     if c == "[CLS]" or c == "[SEP]":
+                #         continue
+                #     else:
+                #         predicted_words.append(c)
+
+                predicted_words_list.append(predicted_words)
+
+            # Construct frame-level character labels
+            target_words_list = []
+            wrd = batch.wrd
+            
+            for i in range(batch_size):
+                target_words = ["<eps>"] * full_frames
+                n_frames = int(full_frames * wav_lens[i])
+                frame_length = durations[i] / n_frames
+                for j, word in enumerate(wrd[i]):
+                    start = int(onsets[i][j] / frame_length)
+                    end = int(offsets[i][j] / frame_length)
+                    target_words[start:end] = [word] * (end - start)
+                    
+                    if j == 0:
+                        target_words[:start] = ["[PAD]"] * start
+                    if j == len(wrd[i]) - 1:
+                        target_words[end:] = ["[PAD]"] * (full_frames - end)
+                target_words_list.append(target_words)
 
             self.cer_metric.append(
                 ids=ids, predict=predicted_words_list, target=target_words_list,
@@ -183,122 +257,6 @@ class ASR(sb.Brain):
             self.wav2vec_optimizer.zero_grad(set_to_none)
         self.model_optimizer.zero_grad(set_to_none)
 
-    def get_frame_level_token(self, predictions, batch):
-        """Computes the frame-level token labels given predictions and targets."""
-        logits, wav_lens = predictions
-        tokens, tokens_lens = batch.tokens
-        onsets = batch.onsets
-        offsets = batch.offsets
-        durations = batch.durations
-        batch_size = batch.batchsize
-
-        # Construct frame-level token labels
-        full_frames = logits.size(1)
-        token_labels = torch.zeros(batch_size, full_frames, dtype=torch.long)
-        full_tokens = tokens.size(1)
-        for i in range(batch_size):
-            n_frames = int(full_frames * wav_lens[i])
-            frame_level_labels = torch.zeros(full_frames, dtype=torch.long)
-            frame_length = durations[i] / n_frames
-
-            n_tokens = int(full_tokens * tokens_lens[i]) # number of tokens in the sentence
-            for j in range(n_tokens):
-                if j == 0 or j == n_tokens - 1: # [CLS] and [SEP]
-                    continue
-                else:
-                    start = int(onsets[i][j - 1] / frame_length)
-                    end = int(offsets[i][j - 1] / frame_length)
-                    frame_level_labels[start:end] = tokens[i][j]
-
-            token_labels[i] = frame_level_labels
-        return token_labels
-    
-    def decode(self, predictions):
-        """Decode token terms to words."""
-        logits, wav_lens = predictions
-        full_frames = logits.size(1)
-
-        # Choose the token with the highest value for each frame
-        sequences = []
-        for seq, seq_len in zip(logits, wav_lens):
-            seq = seq[:int(full_frames * seq_len)]
-            _, max_index = torch.max(seq, dim=1)
-            sequences.append(max_index.tolist())
-        predicted_words_list = []
-
-        for sequence in sequences:
-            # Decode token terms to words
-            predicted_words = self.tokenizer.convert_ids_to_tokens(
-                sequence
-            )
-
-            predicted_words_list.append(predicted_words)
-        return predicted_words_list
-    
-    def get_frame_level_character(self, predictions, batch):
-        """Computes the frame-level character labels given predictions and targets."""
-        logits, wav_lens = predictions
-        wrd = batch.wrd
-        onsets = batch.onsets
-        offsets = batch.offsets
-        durations = batch.durations
-        batch_size = batch.batchsize
-
-        full_frames = logits.size(1)
-        # Construct frame-level character labels
-        target_words_list = []
-        wrd = batch.wrd
-        
-        for i in range(batch_size):
-            target_words = ["<eps>"] * full_frames
-            n_frames = int(full_frames * wav_lens[i])
-            frame_length = durations[i] / n_frames
-            for j, word in enumerate(wrd[i]):
-                start = int(onsets[i][j] / frame_length)
-                end = int(offsets[i][j] / frame_length)
-                target_words[start:end] = [word] * (end - start)
-                
-                if j == 0:
-                    target_words[:start] = ["[PAD]"] * start
-                if j == len(wrd[i]) - 1:
-                    target_words[end:] = ["[PAD]"] * (full_frames - end)
-            target_words_list.append(target_words)
-        return target_words_list
-    
-    def transcribe(self, inference_set, max_key=None, min_key=None, loader_kwargs={}):
-        """Transcribe the whole dataset."""
-        if not (
-            isinstance(inference_set, DataLoader)
-            or isinstance(inference_set, sb.dataio.dataloader.LoopedLoader)
-        ):
-            loader_kwargs["ckpt_prefix"] = None
-            inference_set = self.make_dataloader(
-                inference_set, stage=sb.Stage.TEST, **loader_kwargs
-            )
-        self.on_evaluate_start(max_key=max_key, min_key=min_key)
-        self.on_stage_start(sb.Stage.TEST, epoch=None)
-        self.modules.eval()
-
-        with torch.no_grad():
-            transcripts = []
-            for batch in tqdm(inference_set, dynamic_ncols=True):
-                predictions = self.compute_forward(batch, sb.Stage.TEST)
-                predicted_words_list = self.decode(predictions)
-                transcripts.append(predicted_words_list)
-        
-        with open(self.hparams.transcripts_file, "w") as w:
-            w.write(" ".join(transcripts[0][0]) + "\n")
-        return transcripts
-                
-    
-    # def transcribe_file(self, path, min_key, loader_kwargs):
-    #     sig = sb.dataio.dataio.read_audio(path)
-    #     sig = sig.to(self.device)
-
-    #     # Fake a batch
-    #     batch = sig.unsqueeze(0)
-    #     rel_length = torch.tensor([1.0])
-
 
 def dataio_prepare(hparams):
     """This function prepares the datasets to be used in the brain class.
@@ -340,12 +298,7 @@ def dataio_prepare(hparams):
     )
     test_data = test_data.filtered_sorted(sort_key="duration")
 
-    inference_data = sb.dataio.dataset.DynamicItemDataset.from_json(
-        json_path=hparams["inference_data"], replacements={"data_root": data_folder},
-    )
-    inference_data = inference_data.filtered_sorted(sort_key="duration")
-
-    datasets = [train_data, valid_data, test_data, inference_data]
+    datasets = [train_data, valid_data, test_data]
 
     # Defining tokenizer and loading it
     tokenizer = hparams["tokenizer"]
@@ -430,8 +383,8 @@ def dataio_prepare(hparams):
         tokenizer,
         train_batch_sampler,
         valid_batch_sampler,
-        inference_data
     )
+
 
 if __name__ == "__main__":
 
@@ -463,6 +416,7 @@ if __name__ == "__main__":
         },
     )
 
+    # here we create the datasets objects as well as tokenization and encoding
     (
         train_data,
         valid_data,
@@ -470,8 +424,10 @@ if __name__ == "__main__":
         tokenizer,
         train_bsampler,
         valid_bsampler,
-        inference_data
     ) = dataio_prepare(hparams)
+    # first_item = next(iter(train_data))
+    # print(first_item)
+    # raise Exception('test')
 
     # Trainer initialization
     asr_brain = ASR(
@@ -484,40 +440,30 @@ if __name__ == "__main__":
     # adding objects to trainer:
     asr_brain.tokenizer = tokenizer
 
-    if not hparams["is_inference"]:
-        # Changing the samplers if dynamic batching is activated
-        train_dataloader_opts = hparams["train_dataloader_opts"]
-        valid_dataloader_opts = hparams["valid_dataloader_opts"]
+    # Changing the samplers if dynamic batching is activated
+    train_dataloader_opts = hparams["train_dataloader_opts"]
+    valid_dataloader_opts = hparams["valid_dataloader_opts"]
 
-        if train_bsampler is not None:
-            train_dataloader_opts = {
-                "batch_sampler": train_bsampler,
-                "num_workers": hparams["num_workers"],
-            }
-        if valid_bsampler is not None:
-            valid_dataloader_opts = {"batch_sampler": valid_bsampler}
+    if train_bsampler is not None:
+        train_dataloader_opts = {
+            "batch_sampler": train_bsampler,
+            "num_workers": hparams["num_workers"],
+        }
+    if valid_bsampler is not None:
+        valid_dataloader_opts = {"batch_sampler": valid_bsampler}
 
-        # Training
-        asr_brain.fit(
-            asr_brain.hparams.epoch_counter,
-            train_data,
-            valid_data,
-            train_loader_kwargs=train_dataloader_opts,
-            valid_loader_kwargs=valid_dataloader_opts,
-        )
+    # Training
+    asr_brain.fit(
+        asr_brain.hparams.epoch_counter,
+        train_data,
+        valid_data,
+        train_loader_kwargs=train_dataloader_opts,
+        valid_loader_kwargs=valid_dataloader_opts,
+    )
 
-        # Testing
-        asr_brain.evaluate(
-            test_data,
-            min_key="CER",
-            test_loader_kwargs=hparams["test_dataloader_opts"],
-        )
-    
-    else:
-
-        # Inference
-        transcipt = asr_brain.transcribe(
-            inference_data,
-            min_key="CER",
-            loader_kwargs=hparams["inference_dataloader_opts"],
-        )
+    # Testing
+    asr_brain.evaluate(
+        test_data,
+        min_key="CER",
+        test_loader_kwargs=hparams["test_dataloader_opts"],
+    )

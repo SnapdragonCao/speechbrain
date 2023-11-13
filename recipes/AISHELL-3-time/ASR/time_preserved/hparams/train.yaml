@@ -8,27 +8,31 @@
 # Authors:  Yingzhi WANG 2022
 # ############################################################################
 
-seed: 2
+seed: 3
 __set_seed: !apply:torch.manual_seed [!ref <seed>]
 output_folder: !ref results/time_preserved/<seed>
 cer_file: !ref <output_folder>/cer.txt
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
+distributed_launch: False
+is_inference: False
+transcripts_file: !ref <output_folder>/inference_transcripts.txt
 
 # Data files
 data_folder: !ref /data2/xiaolong/AISHELL3 # e,g./path/to/aishell
 
-skip_prep: True
+skip_prep: False
 ckpt_interval_minutes: 15 # save checkpoint every N min
 train_data: !ref <output_folder>/train.json
 valid_data: !ref <output_folder>/valid.json
 test_data: !ref <output_folder>/test.json
+inference_data: !ref <output_folder>/inference.json
 
 wav2vec2_hub: TencentGameMate/chinese-wav2vec2-large
 wav2vec2_folder: !ref <save_folder>/wav2vec2_checkpoint
 
 # Training parameters
-number_of_epochs: 10
+number_of_epochs: 25
 lr: 0.0001
 lr_wav2vec: 0.0001
 sorting: descending
@@ -61,6 +65,9 @@ valid_dataloader_opts:
    batch_size: !ref <test_batch_size>
    num_workers: !ref <num_workers>
 test_dataloader_opts:
+   batch_size: !ref <test_batch_size>
+   num_workers: !ref <num_workers>
+inference_dataloader_opts:
    batch_size: !ref <test_batch_size>
    num_workers: !ref <num_workers>
 
